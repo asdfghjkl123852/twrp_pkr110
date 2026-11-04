@@ -93,6 +93,8 @@ jobs:
         run: |
           cd ~/twrp
           # out 放到 /mnt（~74 GB 独立分区），否则根分区装不下源码 + 产物
+          # /mnt 属 root，不先建目录并改属主，m 启动即报 Permission denied
+          sudo mkdir -p /mnt/out && sudo chown -R "$USER" /mnt/out
           export OUT_DIR=/mnt/out
           export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
           export PATH=$JAVA_HOME/bin:$PATH
