@@ -19,7 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # runner 根分区只有 ~72 GB，AOSP 16 源码就要 80 GB，必须先腾空间
+      # 根分区装不下源码，先腾空间
       - name: 释放磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
@@ -31,10 +31,10 @@ jobs:
           docker-images: true
           swap-storage: false
 
-      # soong_build 解析全树 Android.bp 峰值 10~12 GB，16 GB runner 需要 swap 兜底
+      # 加 swap，防 soong 被 OOM
       - name: 创建 swap
         run: |
-          # runner 自带一个正在使用的 /swapfile，直接 fallocate 会报 Text file busy
+          # 自带的 /swapfile 在用，直接 fallocate 会报 Text file busy
           sudo swapoff /swapfile 2>/dev/null || true
           sudo rm -f /swapfile
           sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
@@ -84,7 +84,7 @@ jobs:
           cd ~/twrp
           git clone --depth=1 -b twrp-14 https://github.com/kmiit/android_device_oneplus_hummer-TWRP \
                     device/OnePlus/PKR110
-          # 只构建 64 位变体：AOSP 默认会启用 TARGET_2ND_ARCH=arm 让模块图翻倍
+          # 关掉 32 位变体，模块图少一半
           grep -q TARGET_SUPPORTS_32_BIT_APPS device/OnePlus/PKR110/BoardConfig.mk || \
             printf '\nTARGET_SUPPORTS_32_BIT_APPS := false\nTARGET_SUPPORTS_64_BIT_APPS := true\n' \
               >> device/OnePlus/PKR110/BoardConfig.mk
@@ -92,8 +92,8 @@ jobs:
       - name: 编译 recovery
         run: |
           cd ~/twrp
-          # out 放到 /mnt（~74 GB 独立分区），否则根分区装不下源码 + 产物
-          # /mnt 属 root，不先建目录并改属主，m 启动即报 Permission denied
+          # out 放 /mnt，根分区放不下
+          # /mnt 属 root，先建目录改属主
           sudo mkdir -p /mnt/out && sudo chown -R "$USER" /mnt/out
           export OUT_DIR=/mnt/out
           export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
@@ -108,7 +108,7 @@ jobs:
           mka recoveryimage -j$(nproc)
           ls -lh /mnt/out/target/product/PKR110/recovery.img
 
-      # upload-artifact 不会展开 ~ 和 $HOME，必须写绝对路径
+      # 这里必须写绝对路径，~ 和 $HOME 不会被展开
       - name: 上传 recovery.img
         uses: actions/upload-artifact@v4
         with:
