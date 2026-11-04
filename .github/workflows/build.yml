@@ -1,113 +1,99 @@
-name: Build TWRP for OnePlus Ace 5 Pro (PKR110)
+name: Build TWRP · OnePlus Ace 5 Pro (PKR110)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'TWRP manifest 分支'
+        description: 'TWRP manifest branch'
         required: false
         default: 'twrp-14'
   push:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# 同一分支只保留最新一次运行，避免重复 push 触发并发构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MANIFEST: https://github.com/kmiit/platform_manifest_twrp_aosp
+  DEVICE_TREE: https://github.com/kmiit/android_device_oneplus_hummer-TWRP
+  BRANCH: ${{ inputs.branch || 'twrp-14' }}
+  OUT_DIR: /mnt/out
 
 jobs:
   build:
+    name: recovery.img
     runs-on: ubuntu-24.04
     timeout-minutes: 350
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # runner 根分区只有 ~72 GB，AOSP 16 源码就要 80 GB，必须先腾空间
-      - name: 释放磁盘空间
+      - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
           swap-storage: false
 
-      # soong_build 解析全树 Android.bp 峰值 10~12 GB，16 GB runner 需要 swap 兜底
-      - name: 创建 swap
+      - name: Set up toolchain
         run: |
-          # runner 自带一个正在使用的 /swapfile，直接 fallocate 会报 Text file busy
+          # soong_build 解析全树峰值 10~12 GB，16 GB runner 需 swap 兜底
           sudo swapoff /swapfile 2>/dev/null || true
           sudo rm -f /swapfile
-          sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
-          df -h /
+          sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384 status=none
+          sudo chmod 600 /swapfile && sudo mkswap -q /swapfile && sudo swapon /swapfile
 
-      - name: 安装编译依赖
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            bc bison build-essential curl flex g++-multilib gcc-multilib \
             git git-lfs gnupg gperf imagemagick lib32readline-dev lib32z1-dev \
             libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
             python3 python-is-python3 openjdk-21-jdk-headless
+
           mkdir -p ~/bin
           curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
-          echo "$HOME/bin" >> $GITHUB_PATH
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: 配置 git
-        run: |
-          git config --global user.name "ci"
-          git config --global user.email "ci@example.com"
+          git config --global user.name  "ci"
+          git config --global user.email "ci@localhost"
           git config --global http.postBuffer 524288000
 
-      - name: 缓存 ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ github.run_id }}
-          restore-keys: ccache-
-
-      - name: repo init + sync
+      - name: Sync source
         run: |
           mkdir -p ~/twrp && cd ~/twrp
-          repo init --depth=1 -u https://github.com/kmiit/platform_manifest_twrp_aosp \
-                    -b "${{ github.event.inputs.branch || 'twrp-14' }}" --no-clone-bundle
+          repo init --depth=1 -u "$MANIFEST" -b "$BRANCH" --no-clone-bundle
           repo sync -c -j8 --force-sync --no-clone-bundle --no-tags
-          df -h /
 
-      - name: 拉取 PKR110 设备树
-        run: |
-          cd ~/twrp
-          git clone --depth=1 -b twrp-14 https://github.com/kmiit/android_device_oneplus_hummer-TWRP \
-                    device/OnePlus/PKR110
-          # 只构建 64 位变体：AOSP 默认会启用 TARGET_2ND_ARCH=arm 让模块图翻倍
+          # 设备树仓库只有 twrp-14 分支
+          git clone --depth=1 -b twrp-14 "$DEVICE_TREE" device/OnePlus/PKR110
+
+          # 只构建 64 位变体，否则 AOSP 会补 TARGET_2ND_ARCH=arm 让模块图翻倍
           grep -q TARGET_SUPPORTS_32_BIT_APPS device/OnePlus/PKR110/BoardConfig.mk || \
             printf '\nTARGET_SUPPORTS_32_BIT_APPS := false\nTARGET_SUPPORTS_64_BIT_APPS := true\n' \
               >> device/OnePlus/PKR110/BoardConfig.mk
 
-      - name: 编译 recovery
+      - name: Build recovery
         run: |
           cd ~/twrp
-          # out 放到 /mnt（~74 GB 独立分区），否则根分区装不下源码 + 产物
-          export OUT_DIR=/mnt/out
+          # out 放独立分区，根分区装不下源码 + 产物
+          sudo mkdir -p "$OUT_DIR" && sudo chown -R "$USER" "$OUT_DIR"
+
           export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-          export PATH=$JAVA_HOME/bin:$PATH
+          export PATH="$JAVA_HOME/bin:$PATH"
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL=C
-          export USE_CCACHE=1
-          export CCACHE_EXEC=$(command -v ccache)
-          ccache -M 30G || true
+
           source build/envsetup.sh
           lunch twrp_PKR110-ap2a-eng
-          mka recoveryimage -j$(nproc)
-          ls -lh /mnt/out/target/product/PKR110/recovery.img
+          m recoveryimage -j"$(nproc)"
 
-      # upload-artifact 不会展开 ~ 和 $HOME，必须写绝对路径
-      - name: 上传 recovery.img
+          ls -lh "$OUT_DIR/target/product/PKR110/recovery.img"
+
+      - name: Upload recovery image
         uses: actions/upload-artifact@v4
         with:
           name: recovery-PKR110
@@ -115,7 +101,7 @@ jobs:
           if-no-files-found: error
           retention-days: 15
 
-      - name: 失败时收集日志
+      - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
