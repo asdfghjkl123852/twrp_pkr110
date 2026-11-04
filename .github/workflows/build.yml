@@ -34,6 +34,9 @@ jobs:
       # soong_build 解析全树 Android.bp 峰值 10~12 GB，16 GB runner 需要 swap 兜底
       - name: 创建 swap
         run: |
+          # runner 自带一个正在使用的 /swapfile，直接 fallocate 会报 Text file busy
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
           sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
